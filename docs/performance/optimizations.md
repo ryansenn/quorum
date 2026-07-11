@@ -2,7 +2,7 @@
 
 Changelog of write-path optimizations applied to Quorum, tracked against the roadmap in [performance.md](../performance.md).
 
-The sections below put architecturally interesting changes first. Low-hanging fruit (removing bad sleep patterns and small CPU wins) is at the end.
+The sections below put architecturally interesting changes first. Smaller replication-path fixes (removing bad sleep patterns and small CPU wins) are at the end.
 
 Per-experiment tables use the `--quick` harness (2 s measurement window). Headline numbers in the [benchmark report](../benchmarks/REPORT.md) and README use the full 5 s suite (about 28k write ops/s at conc=64 versus about 20k here).
 
