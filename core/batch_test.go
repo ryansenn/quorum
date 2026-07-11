@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -91,22 +90,26 @@ func TestBatchFlushOnSize(t *testing.T) {
 	}
 	wg.Wait()
 
-	if n.GetLogSize() != 1 {
-		t.Fatalf("expected 1 batched log entry, got %d", n.GetLogSize())
+	entries := n.GetLogSize()
+	if entries >= 4 {
+		t.Fatalf("expected batching to reduce log entries below 4, got %d", entries)
 	}
-	size, _, _ := n.batcher.FlushCounts()
-	if size < 1 {
-		t.Fatalf("expected size flush, got size=%d", size)
+	if avg := n.batcher.AvgBatchSize(); avg < 1.5 {
+		t.Fatalf("avg batch size %.2f, want > 1.5", avg)
 	}
-	if avg := n.batcher.AvgBatchSize(); avg < 3.5 {
-		t.Fatalf("avg batch size %.2f, want ~4", avg)
+	for i := 0; i < 4; i++ {
+		if got := n.Storage.Get(fmt.Sprintf("k%d", i)); got != "v" {
+			t.Fatalf("k%d=%q", i, got)
+		}
 	}
 }
 
 func TestBatchFlushOnTimer(t *testing.T) {
+	// With drain-and-flush policy there is no timer wait. A single put under
+	// BatchMaxOps>1 still commits as its own entry immediately.
 	prevOps, prevWait := BatchMaxOps, BatchMaxWait
 	BatchMaxOps = 64
-	BatchMaxWait = 5 * time.Millisecond
+	BatchMaxWait = time.Hour
 	defer func() {
 		BatchMaxOps = prevOps
 		BatchMaxWait = prevWait
@@ -124,9 +127,11 @@ func TestBatchFlushOnTimer(t *testing.T) {
 	if got != "success" {
 		t.Fatalf("got %s", got)
 	}
-	_, timer, _ := n.batcher.FlushCounts()
-	if timer < 1 {
-		t.Fatalf("expected timer flush, got timer=%d", timer)
+	if n.GetLogSize() != 1 {
+		t.Fatalf("expected 1 entry for a lone put, got %d", n.GetLogSize())
+	}
+	if got := n.Storage.Get("solo"); got != "v" {
+		t.Fatalf("solo=%q", got)
 	}
 }
 
@@ -143,29 +148,44 @@ func TestBatchRejectOnStepDown(t *testing.T) {
 	n.SetState(Leader)
 	n.Term.Store(1)
 	go n.batcher.run()
+	// Deliberately do NOT advance commits: the first put blocks inside Commit,
+	// and later puts sit in the submit channel until RejectPending drains them.
 
-	var started atomic.Bool
-	done := make(chan string, 1)
+	firstStarted := make(chan struct{})
 	go func() {
-		started.Store(true)
-		done <- n.HandleCommand(NewCommand("put", "pending", "v"))
+		close(firstStarted)
+		_ = n.HandleCommand(NewCommand("put", "blocking", "v"))
 	}()
+	<-firstStarted
+	time.Sleep(30 * time.Millisecond)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for !started.Load() && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	queued := make(chan string, 2)
+	for i := 0; i < 2; i++ {
+		go func(i int) {
+			queued <- n.HandleCommand(NewCommand("put", fmt.Sprintf("q%d", i), "v"))
+		}(i)
 	}
-	time.Sleep(20 * time.Millisecond) // let it sit in the batch buffer
+	time.Sleep(30 * time.Millisecond)
 	n.SetState(Follower)
 
-	select {
-	case got := <-done:
-		if got != "Error: election" {
-			t.Fatalf("got %q, want Error: election", got)
+	for i := 0; i < 2; i++ {
+		select {
+		case got := <-queued:
+			if got != "Error: election" {
+				t.Fatalf("queued put: got %q, want Error: election", got)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for queued put reject")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for reject")
 	}
+	// Unblock the in-flight Commit so the deferred BatchMaxOps restore does not
+	// race with HandleCommand still reading the package vars.
+	last := int64(n.GetLogSize() - 1)
+	for id := range n.MatchIndex {
+		n.MatchIndex[id].Store(last)
+	}
+	n.UpdateCommitIndex()
+	time.Sleep(20 * time.Millisecond)
 }
 
 func TestBatchDisabledBypass(t *testing.T) {

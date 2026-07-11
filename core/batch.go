@@ -10,8 +10,10 @@ import (
 // own log entry. Tunable via --batch-max-ops.
 var BatchMaxOps = 1
 
-// BatchMaxWait is how long the leader waits for a batch to fill before flushing
-// a partial batch. Tunable via --batch-max-wait.
+// BatchMaxWait is retained as a CLI knob for experiment harnesses. The
+// collector flushes as soon as it has drained the submit queue (closed-loop
+// clients cannot fill a timer wait without adding latency), so this value is
+// currently unused by the flush policy.
 var BatchMaxWait = time.Millisecond
 
 // KV is one key/value pair inside a batched put command.
@@ -27,7 +29,12 @@ type pendingPut struct {
 }
 
 // WriteBatcher collects concurrent leader-side puts into compound log entries.
-// Followers still receive ordinary AppendEntries; only the leader batches.
+// Followers still receive ordinary AppendEntries. Only the leader batches.
+//
+// Flush policy: on each arrival, non-blocking-drain the submit channel up to
+// BatchMaxOps, then flush immediately. Concurrent closed-loop clients pile up
+// in the channel while the previous Commit runs, so the next drain naturally
+// forms a large batch without a timer. A timer wait would only hurt conc=1.
 type WriteBatcher struct {
 	n          *Node
 	submit     chan *pendingPut
@@ -54,8 +61,6 @@ func (b *WriteBatcher) Submit(key, value string) string {
 	select {
 	case b.submit <- p:
 	default:
-		// Channel full under extreme load: fall back to a single-entry commit
-		// so clients are not blocked forever behind a stalled collector.
 		if b.n.GetState() != Leader {
 			return "Error: election"
 		}
@@ -65,13 +70,21 @@ func (b *WriteBatcher) Submit(key, value string) string {
 	return <-p.done
 }
 
-// RejectPending wakes the collector to fail any buffered puts. Called when
-// this node leaves the Leader role so clients get a fast error instead of
-// waiting for a commit that will never happen.
+// RejectPending fails any puts waiting in the submit channel and wakes the
+// collector to clear an in-progress buffer. Safe to call from SetState while
+// the collector is blocked inside Commit.
 func (b *WriteBatcher) RejectPending() {
-	select {
-	case b.rejectAll <- struct{}{}:
-	default:
+	for {
+		select {
+		case p := <-b.submit:
+			p.done <- "Error: election"
+		default:
+			select {
+			case b.rejectAll <- struct{}{}:
+			default:
+			}
+			return
+		}
 	}
 }
 
@@ -89,11 +102,6 @@ func (b *WriteBatcher) FlushCounts() (size, timer, forced int64) {
 
 func (b *WriteBatcher) run() {
 	var buf []*pendingPut
-	timer := time.NewTimer(BatchMaxWait)
-	if !timer.Stop() {
-		<-timer.C
-	}
-	timerActive := false
 
 	flush := func(reason string) {
 		if len(buf) == 0 {
@@ -105,29 +113,17 @@ func (b *WriteBatcher) run() {
 		}
 		pending := buf
 		buf = nil
-		if timerActive {
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timerActive = false
-		}
 
 		b.flushCount.Add(1)
 		b.flushSize.Add(int64(len(pending)))
 		batchFlushSize.WithLabelValues(b.n.Id).Add(float64(len(pending)))
 		switch reason {
-		case "size":
-			b.bySize.Add(1)
-			batchFlushTotal.WithLabelValues(b.n.Id, "size").Inc()
-		case "timer":
-			b.byTimer.Add(1)
-			batchFlushTotal.WithLabelValues(b.n.Id, "timer").Inc()
 		case "forced":
 			b.byForced.Add(1)
 			batchFlushTotal.WithLabelValues(b.n.Id, "forced").Inc()
+		default:
+			b.bySize.Add(1)
+			batchFlushTotal.WithLabelValues(b.n.Id, "size").Inc()
 		}
 
 		if b.n.GetState() != Leader {
@@ -149,21 +145,22 @@ func (b *WriteBatcher) run() {
 		}
 	}
 
+	drain := func() {
+		for len(buf) < BatchMaxOps {
+			select {
+			case p := <-b.submit:
+				buf = append(buf, p)
+			default:
+				return
+			}
+		}
+	}
+
 	reject := func() {
 		for _, p := range buf {
 			p.done <- "Error: election"
 		}
 		buf = nil
-		if timerActive {
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timerActive = false
-		}
-		// Drain any puts that arrived while we were rejecting.
 		for {
 			select {
 			case p := <-b.submit:
@@ -186,17 +183,9 @@ func (b *WriteBatcher) run() {
 				p.done <- "success"
 				continue
 			}
-			if len(buf) == 0 {
-				timer.Reset(BatchMaxWait)
-				timerActive = true
-			}
 			buf = append(buf, p)
-			if len(buf) >= BatchMaxOps {
-				flush("size")
-			}
-		case <-timer.C:
-			timerActive = false
-			flush("timer")
+			drain()
+			flush("size")
 		case <-b.rejectAll:
 			reject()
 		}
