@@ -1,10 +1,6 @@
 # Performance optimizations
 
-Changelog of write-path optimizations applied to Quorum, tracked against the roadmap in [performance.md](../performance.md).
-
-The sections below put architecturally interesting changes first. Smaller replication-path fixes (removing bad sleep patterns and small CPU wins) are at the end.
-
-Per-experiment tables use the `--quick` harness (2 s measurement window). Headline numbers in the [benchmark report](../benchmarks/REPORT.md) and README use the full 5 s suite (about 28k write ops/s at conc=64 versus about 20k here).
+This document records the experiments I ran while optimizing Quorum’s write path. Each section explains the bottleneck that was identified, the implementation change that addressed it, and the measured impact on throughput and latency. Optimizations that did not produce a repeatable improvement are included as well, along with the reasoning for reverting or keeping them.
 
 Benchmark command (consistent across per-opt runs):
 
@@ -13,6 +9,8 @@ go run ./benchmarks --quick --concurrency=1,16,64 --out=benchmarks/results/<labe
 ```
 
 Environment: Cursor Cloud VM, 4 vCPUs, 16 GB RAM, Go 1.24.0, 3-node cluster, 2 s measurement window.
+
+Per-experiment tables use the `--quick` harness (2 s measurement window). Headline numbers in the [benchmark report](../benchmarks/REPORT.md) and README use the full 5 s suite (about 28k write ops/s at conc=64 versus about 20k here).
 
 ---
 
@@ -291,25 +289,6 @@ Files: `core/leader.go`
 | Write p99 (ms) | 12.63 to 12.26 | 32.94 to 19.38 | 60.19 to 75.39 |
 
 Large gains at low and medium concurrency. Kept.
-
----
-
-## Not implemented (tradeoffs for discussion)
-
-These items from [performance.md](../performance.md) were considered but not implemented because they either require a larger refactor, change consistency or durability guarantees, or did not show measurable benefit in quick testing.
-
-| Idea | Expected benefit | Why deferred |
-|---|---|---|
-| Async / timer-based fsync | High write throughput | Weakens crash durability. Unsynced entries could be lost on power failure. |
-| Optional `--sync=none` mode | Benchmark-only throughput | Useful for load testing but misleading unless clearly documented. |
-| Skip apply wait in `Commit()` | Lower write latency | Write returns before the state machine applies. Breaks read-after-write linearizability on the leader. |
-| Follower-local reads (stale) | High read throughput | Relaxed consistency. Reads may return outdated values. |
-| Read index / leader leases | Linearizable follower reads | Significant Raft extension. The read path is already fast (about 70k ops/s). |
-| Binary / protobuf log encoding | Lower CPU and disk bytes | Migration complexity. Fsync dominated until batching was in place (now addressed). |
-| Shorter election timeouts | Faster failover | Increases false-election risk under load. |
-| HTTP to gRPC client protocol | Modest latency reduction | API change. Consensus cost dominates writes. |
-
-Leader-side write batching moved out of this table into the architectural section above (implemented, opt-in).
 
 ---
 
