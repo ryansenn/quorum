@@ -227,7 +227,7 @@ No consistent improvement (within run-to-run variance). Flag kept as an optional
 
 ---
 
-## Low-hanging fruit
+## Smaller replication-path fixes
 
 These removed accidental waits and duplicated work on the existing replication loop. They matter, and they were measured first historically, but they are not architectural changes to Raft's unit of work or to maintenance I/O.
 
