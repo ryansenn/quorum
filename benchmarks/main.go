@@ -44,6 +44,11 @@ import (
 // across snapshot tuning.
 var snapshotThresholdArg int64
 
+// batchMaxOpsArg / batchMaxWaitArg are passed through to quorum nodes so the
+// harness can sweep write-batching knobs.
+var batchMaxOpsArg int
+var batchMaxWaitArg time.Duration
+
 var client = &http.Client{
 	Timeout: 20 * time.Second,
 	Transport: &http.Transport{
@@ -136,6 +141,12 @@ func (c *cluster) startProc(p *proc, reset string) error {
 	}
 	if snapshotThresholdArg > 0 {
 		args = append(args, fmt.Sprintf("--snapshot-threshold=%d", snapshotThresholdArg))
+	}
+	if batchMaxOpsArg > 0 {
+		args = append(args, fmt.Sprintf("--batch-max-ops=%d", batchMaxOpsArg))
+	}
+	if batchMaxWaitArg > 0 {
+		args = append(args, fmt.Sprintf("--batch-max-wait=%s", batchMaxWaitArg))
 	}
 	cmd := exec.Command(c.binary, args...)
 	logFile, err := os.Create(filepath.Join(c.logDir, p.id+".log"))
@@ -444,9 +455,13 @@ func main() {
 	outDir := flag.String("out", "", "output directory (default benchmarks/results)")
 	noEvents := flag.Bool("no-events", false, "pass --no-events to quorum nodes")
 	snapshotThreshold := flag.Int64("snapshot-threshold", 1<<60, "snapshot threshold passed to nodes; the high default keeps log compaction from firing mid-run so the benchmark isolates the consensus write path (compaction cost is measured separately by TestSnapshotRecoveryBench)")
+	batchMaxOps := flag.Int("batch-max-ops", 1, "pass --batch-max-ops to quorum nodes (1 disables write batching)")
+	batchMaxWait := flag.Duration("batch-max-wait", time.Millisecond, "pass --batch-max-wait to quorum nodes")
 	flag.Parse()
 
 	snapshotThresholdArg = *snapshotThreshold
+	batchMaxOpsArg = *batchMaxOps
+	batchMaxWaitArg = *batchMaxWait
 
 	dur := *durFlag
 	if *quick {

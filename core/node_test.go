@@ -177,6 +177,44 @@ func TestSnapshotCompaction(t *testing.T) {
 	}
 }
 
+func TestCompactionKeepsConcurrentAppends(t *testing.T) {
+	n := testNode(t, "node1")
+	n.SetState(Leader)
+	n.Term.Store(1)
+
+	prev := SnapshotThreshold
+	SnapshotThreshold = 5
+	defer func() { SnapshotThreshold = prev }()
+
+	for i := 0; i < 20; i++ {
+		n.AppendLog(NewCommand("put", fmt.Sprintf("k%d", i), fmt.Sprintf("v%d", i)))
+	}
+	n.CommitIndex.Store(19)
+	n.ApplyCommitted()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 20; i < 30; i++ {
+			n.AppendLog(NewCommand("put", fmt.Sprintf("k%d", i), fmt.Sprintf("v%d", i)))
+		}
+	}()
+	n.maybeCompact()
+	<-done
+
+	n.CommitIndex.Store(int64(n.GetLogSize() - 1))
+	n.ApplyCommitted()
+	if got := n.Storage.Get("k29"); got != "v29" {
+		t.Fatalf("concurrent append lost: k29=%q", got)
+	}
+	if got := n.SnapshotIndex.Load(); got != 19 {
+		t.Fatalf("SnapshotIndex = %d, want 19", got)
+	}
+	if got := n.GetLogSize(); got != 30 {
+		t.Fatalf("GetLogSize = %d, want 30", got)
+	}
+}
+
 func TestRequestVoteGrantDeny(t *testing.T) {
 	follower := testNode(t, "node2")
 	follower.Term.Store(1)

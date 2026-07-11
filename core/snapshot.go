@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"time"
 
 	pb "github.com/ryanssenn/quorum/proto/nodepb"
@@ -45,15 +46,15 @@ func (n *Node) runCompactor() {
 
 // maybeCompact snapshots the state machine up to LastApplied and drops the
 // covered log prefix, once enough new entries have been applied since the last
-// snapshot. Holding ApplyMu pins the state machine to a consistent cut; LogMu
-// guards the log/offset rewrite.
+// snapshot. Disk work (snapshot write, log rewrite, fsync) runs without holding
+// ApplyMu/LogMu. A brief cutover under LogMu swaps the pre-synced files in and
+// aborts if another compaction or InstallSnapshot moved SnapshotIndex first.
 func (n *Node) maybeCompact() {
 	n.ApplyMu.Lock()
-	defer n.ApplyMu.Unlock()
-
 	applied := n.LastApplied.Load()
 	si := n.SnapshotIndex.Load()
 	if applied-si < SnapshotThreshold {
+		n.ApplyMu.Unlock()
 		return
 	}
 
@@ -64,16 +65,38 @@ func (n *Node) maybeCompact() {
 		dropRel = int64(len(n.Log))
 	}
 	remaining := append([]*LogEntry(nil), n.Log[dropRel:]...)
+	logLenAtCapture := len(n.Log)
 	state := n.Storage.Snapshot()
 	data, _ := json.Marshal(state)
+	n.LogMu.Unlock()
+	n.ApplyMu.Unlock()
 
-	n.Logger.WriteSnapshot(&Snapshot{LastIncludedIndex: applied, LastIncludedTerm: term, Data: state})
-	n.Logger.Rewrite(remaining)
+	snap := &Snapshot{LastIncludedIndex: applied, LastIncludedTerm: term, Data: state}
+	snapTmp := n.Logger.writeSnapshotTemp(snap)
+	logTmp := n.Logger.writeLogTemp(remaining)
+
+	n.LogMu.Lock()
+	defer n.LogMu.Unlock()
+
+	// Another compaction or InstallSnapshot won the race. Drop temps and retry later.
+	if n.SnapshotIndex.Load() != si {
+		os.Remove(snapTmp)
+		os.Remove(logTmp)
+		return
+	}
+
+	if len(n.Log) > logLenAtCapture {
+		extra := append([]*LogEntry(nil), n.Log[logLenAtCapture:]...)
+		n.Logger.appendLogTemp(logTmp, extra)
+		remaining = append(remaining, extra...)
+	}
+
+	n.Logger.swapLogFile(logTmp, remaining)
+	n.Logger.commitSnapshotTemp(snapTmp)
 	n.Log = remaining
 	n.SnapshotIndex.Store(applied)
 	n.SnapshotTerm.Store(term)
 	n.snapshotData = data
-	n.LogMu.Unlock()
 }
 
 // sendSnapshot ships the current snapshot to a follower that has fallen behind

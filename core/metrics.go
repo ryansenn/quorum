@@ -74,6 +74,21 @@ var (
 		Help:    "Client HTTP request latency.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"node", "op"})
+
+	batchFlushSize = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "quorum_batch_flush_ops_total",
+		Help: "Total client puts packed into flushed write batches.",
+	}, []string{"node"})
+
+	batchFlushTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "quorum_batch_flushes_total",
+		Help: "Write-batch flushes by reason.",
+	}, []string{"node", "reason"})
+
+	batchAvgSize = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "quorum_batch_avg_size",
+		Help: "Average number of puts per flushed write batch.",
+	}, []string{"node"})
 )
 
 func RegisterNodeMetrics(n *Node) {
@@ -96,6 +111,9 @@ func RegisterNodeMetrics(n *Node) {
 
 func (n *Node) RefreshMetrics() {
 	RegisterNodeMetrics(n)
+	if n.batcher != nil {
+		batchAvgSize.WithLabelValues(n.Id).Set(n.batcher.AvgBatchSize())
+	}
 }
 
 func (n *Node) RecordElection() {

@@ -148,6 +148,10 @@ func NewNodes(n int) []*Node {
 // so tests can force log compaction without writing thousands of keys.
 var SnapshotThresholdArg int64
 
+// BatchMaxOpsArg, when > 0, is passed to each node as --batch-max-ops.
+// Integration tests default to 1 (disabled) so one put remains one log entry.
+var BatchMaxOpsArg = 1
+
 func (n *Node) StartNode(t *testing.T, reset string) {
 	t.Helper()
 	buildBinary(t)
@@ -156,6 +160,7 @@ func (n *Node) StartNode(t *testing.T, reset string) {
 	if SnapshotThresholdArg > 0 {
 		args = append(args, fmt.Sprintf("--snapshot-threshold=%d", SnapshotThresholdArg))
 	}
+	args = append(args, fmt.Sprintf("--batch-max-ops=%d", BatchMaxOpsArg))
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = repoRoot
 	cmd.Stdout = os.Stdout
