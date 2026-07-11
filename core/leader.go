@@ -253,9 +253,13 @@ func (n *Node) ApplyLogEntry(index int64) {
 		return
 	}
 	cmd := n.Log[rel].Command
+	n.LogMu.Unlock()
 	switch cmd.Op {
 	case "put":
 		n.Storage.Put(cmd.Key, cmd.Value)
+	case "batch":
+		for _, kv := range cmd.Puts {
+			n.Storage.Put(kv.Key, kv.Value)
+		}
 	}
-	n.LogMu.Unlock()
 }

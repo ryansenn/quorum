@@ -30,7 +30,7 @@ Implements the core Raft protocol from the original paper:
 - Snapshotting and log compaction
 - InstallSnapshot RPC for followers that fall behind compacted logs
 
-Nodes communicate over gRPC. Clients use a small HTTP API and can connect to any node; followers automatically forward requests to the current leader. The replicated state machine is a simple in-memory key-value store.
+Nodes communicate over gRPC. Clients use a small HTTP API and can connect to any node. Followers automatically forward requests to the current leader. The replicated state machine is a simple in-memory key-value store.
 
 For a guided tour of the code (including a complete write traced from HTTP to disk), see [docs/guide.md](docs/guide.md).
 
@@ -60,7 +60,7 @@ go run ./benchmarks --quick --concurrency=1,16,64
 
 ```bash
 go test -race ./core      # unit tests: elections, commit/apply, voting, persistence
-go test -v ./test         # integration: real 5-node cluster; failover, restarts, snapshot catch-up
+go test -v ./test         # integration: real 5-node cluster (failover, restarts, snapshot catch-up)
 go test ./playground/...  # playground harness and API
 ```
 
@@ -68,7 +68,7 @@ The integration suite builds the binary, launches a live cluster as subprocesses
 
 ## Manual setup
 
-Each node exposes an HTTP API on `--port`. Raft RPC addresses are configured through `--peers` using the format `id=host:port`. A majority of the configured nodes must be up to commit writes; three is the minimum that survives a node failure.
+Each node exposes an HTTP API on `--port`. Raft RPC addresses are configured through `--peers` using the format `id=host:port`. A majority of the configured nodes must be up to commit writes. Three is the minimum that survives a node failure.
 
 ```bash
 go build -o quorum .
@@ -80,7 +80,7 @@ go build -o quorum .
   --reset=true
 ```
 
-Start `node2` and `node3` the same way with their own `--id` and `--port`. Use `--reset=false` on restart to recover from the persisted log. Then send requests to any node; followers automatically forward them to the leader.
+Start `node2` and `node3` the same way with their own `--id` and `--port`. Use `--reset=false` on restart to recover from the persisted log. Then send requests to any node. Followers automatically forward them to the leader.
 
 ```bash
 curl "http://127.0.0.1:8001/put?key=foo&value=bar"

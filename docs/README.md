@@ -2,7 +2,7 @@
 
 | Doc | Description |
 |---|---|
-| [guide.md](guide.md) | Raft concepts mapped to the Go source; write/read traces |
+| [guide.md](guide.md) | Raft concepts mapped to the Go source, with write and read traces |
 | [observability.md](observability.md) | Metrics catalog, PromQL, Grafana layout, alerts |
 | [development/testing.md](development/testing.md) | Test commands and inventory |
 | [performance.md](performance.md) | Performance roadmap (done and planned items) |

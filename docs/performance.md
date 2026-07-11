@@ -6,10 +6,10 @@ Many of these changes add complexity or weaken durability guarantees. They are l
 
 Status legend used throughout this document:
 
-- [done] implemented; see [optimizations.md](performance/optimizations.md) for measured results.
-- [planned] not yet implemented; described here as a roadmap item.
+- [done] implemented. See [optimizations.md](performance/optimizations.md) for measured results.
+- [planned] not yet implemented. Described here as a roadmap item.
 
-Already implemented on the write path: group commit / batched fsync, a single fsync per batch (deduplicated across replicators), removing the per-round replication sleep, waking replicators immediately on append, caching the serialized form of each log entry so it is marshaled once, removing the post-mismatch replication backoff, and bounding `AppendEntries` payloads so a far-behind follower catches up in steady batches. The remaining items below are the genuinely outstanding work.
+Already implemented on the write path: group commit / batched fsync, a single fsync per batch (deduplicated across replicators), removing the per-round replication sleep, waking replicators immediately on append, caching the serialized form of each log entry so it is marshaled once, removing the post-mismatch replication backoff, bounding `AppendEntries` payloads, optional leader write batching (`--batch-max-ops`), snapshots with off-lock compaction, and InstallSnapshot catch-up. Pipelined commits were tried and reverted. The remaining items below are still open.
 
 ---
 
@@ -21,9 +21,9 @@ On a single host with a 3-node cluster (see the benchmark report for full number
 |---|---|---|
 | Writes | ~28k ops/sec at 64 clients | Consensus, replication, disk sync |
 | Reads (leader) | ~94k ops/sec | HTTP + in-memory map lookup |
-| Failover | ~1.4 s | Election timeout (600–1000 ms) |
+| Failover | ~1.4 s | Election timeout (600 to 1000 ms) |
 
-Writes are roughly 3–12× slower than reads, depending on concurrency. That gap is expected: every write goes through Raft and is persisted to disk before the client receives success. Reads on the leader skip consensus and disk. Before the write-path optimizations, writes were far slower: ~2.4k ops/sec at 64 clients; see [optimizations.md](performance/optimizations.md).
+Writes are roughly 3 to 12× slower than reads, depending on concurrency. That gap is expected: every write goes through Raft and is persisted to disk before the client receives success. Reads on the leader skip consensus and disk. Before the write-path optimizations, writes were far slower: about 2.4k ops/sec at 64 clients. See [optimizations.md](performance/optimizations.md).
 
 The sections below follow the write path first, since that is where most gain is available.
 
@@ -41,7 +41,7 @@ Batch persistence. [done] Buffer several log entries in memory and call `Sync()`
 
 Separate append and sync. Append entries quickly, sync on a timer or when a byte/time threshold is reached. Requires careful recovery logic so replay after crash does not double-apply or miss entries.
 
-Optional durability modes. Expose a flag (e.g. `--sync=always|batch|none`) for experiments. `always` matches current behavior; `batch` improves benchmarks; `none` is useful only for load testing without caring about crash safety.
+Optional durability modes. Expose a flag (e.g. `--sync=always|batch|none`) for experiments. `always` matches current behavior. `batch` improves benchmarks. `none` is useful only for load testing without caring about crash safety.
 
 Faster on-disk format. Entries are JSON with a length prefix. A fixed-width or protobuf encoding would reduce CPU and bytes written, but fsync latency usually dominates until batching is in place.
 
@@ -74,21 +74,22 @@ Wake replicators on append. [done] `notifyReplicators` signals idle follower gor
 
 Serialize once. [done] Commands are marshaled a single time and cached on the log entry, avoiding repeated JSON encoding on every replication step.
 
-Batch client writes into fewer log entries. A leader-side write buffer could combine multiple `put` requests into one `AppendEntries` round trip. Throughput scales with batch size until disk or network limits apply.
+Batch client writes into fewer log entries. [done, opt-in] A leader-side write buffer can combine multiple `put` requests into one compound log entry (`--batch-max-ops`). On loopback closed-loop load it did not reliably beat group commit alone. See [optimizations.md](performance/optimizations.md).
 
-Pipeline commits on the leader. [planned] Today the fsync and the replication RPC sit in series on each replicator's hot path, and commit waiters are woken with a broadcast condition variable. Decoupling persistence (a dedicated fsync pipeline that publishes a durable index) from replication, and replacing the broadcast wakeups with targeted notification, lets disk and network progress in parallel and removes per-commit lock contention.
+Pipeline commits on the leader. [done, reverted] A dedicated fsync pipeline and targeted commit notifications were implemented and measured. Ranges overlapped the baseline, so the change was reverted. See [optimizations.md](performance/optimizations.md).
 
-Parallel append to disk and network. [planned] Persist locally and send to followers concurrently where safe, rather than fsyncing before each replication send.
+Off-lock snapshot compaction. [done] Snapshot write and log rewrite run without holding the apply/log locks. A brief cutover swaps pre-synced files. See [optimizations.md](performance/optimizations.md).
 
-Tune RPC timeouts. AppendEntries uses a 300 ms timeout. On LAN this is fine; on WAN, adaptive timeouts reduce false retries. On loopback, shorter timeouts with faster retry may reduce tail latency.
+Tune RPC timeouts. AppendEntries uses a 300 ms timeout. On LAN this is fine. On WAN, adaptive timeouts reduce false retries. On loopback, shorter timeouts with faster retry may reduce tail latency.
 
 | Change | Expected impact | Complexity |
 |---|---|---|
 | Remove per-round replication sleep [done] | Medium to high write throughput | Low |
 | Bounded `AppendEntries` batches [done] | Reliable follower catch-up | Low |
 | Single encoding for log + RPC [done] | Low to medium CPU | Medium |
-| Leader write batching | High write throughput | Medium |
-| Pipelined in-flight commits | High under concurrent clients | Medium |
+| Leader write batching [done, opt-in] | Mixed on loopback. Opt-in via `--batch-max-ops`. | Medium |
+| Pipelined in-flight commits [done, reverted] | No repeatable gain | Medium |
+| Off-lock compaction [done] | Lower p99 under active compaction | Medium |
 
 ---
 
@@ -102,15 +103,15 @@ Benchmarks already show reads near 94k ops/sec on one machine. Further gains are
 
 ### Possible improvements
 
-Serve reads from followers (relaxed consistency). Followers could read their local map without forwarding if the application accepts stale reads. Large read-heavy workloads benefit; linearizability is lost unless combined with read-index or lease mechanisms.
+Serve reads from followers (relaxed consistency). Followers could read their local map without forwarding if the application accepts stale reads. Large read-heavy workloads benefit. Linearizability is lost unless combined with read-index or lease mechanisms.
 
 Read index (linearizable follower reads). Before serving a read, a follower confirms with the leader that it is still safe to read at its current commit index. Adds one round trip but spreads read load without stale data.
 
-Leader read leases. The leader grants a short lease during which it assumes it is still leader; reads skip some synchronization. Common in etcd-style systems; must tie into election safety.
+Leader read leases. The leader grants a short lease during which it assumes it is still leader. Reads skip some synchronization. Common in etcd-style systems. Must tie into election safety.
 
 Skip work on the hot path. `/status` and `/events` are useful for debugging but add work if called frequently. A production mode could disable event recording on client requests ([`main.go`](../main.go)).
 
-Alternative client protocol. HTTP with query parameters is simple but not optimal. gRPC or a binary HTTP API would reduce parsing overhead; expect modest gains compared with consensus cost on writes.
+Alternative client protocol. HTTP with query parameters is simple but not optimal. gRPC or a binary HTTP API would reduce parsing overhead. Expect modest gains compared with consensus cost on writes.
 
 | Change | Expected impact | Complexity | Consistency |
 |---|---|---|---|
@@ -124,19 +125,19 @@ Alternative client protocol. HTTP with query parameters is simple but not optima
 
 ### What was missing
 
-Originally the log grew without bound on disk and in memory; there was no compaction or snapshotting. Long-running clusters paid for it with larger catch-up messages, slower restart (as [`RecoverState`](../core/node.go) replayed the full log), and ever-growing disk I/O.
+Originally the log grew without bound on disk and in memory. There was no compaction or snapshotting. Long-running clusters paid for it with larger catch-up messages, slower restart (as [`RecoverState`](../core/node.go) replayed the full log), and ever-growing disk I/O.
 
 ### What is implemented
 
 Snapshotting. [done] A background compactor folds the applied prefix of the log into a state-machine snapshot once enough entries accumulate beyond the previous snapshot (`SnapshotThreshold`). See [`core/snapshot.go`](../core/snapshot.go).
 
-Truncation after snapshot. [done] The covered log prefix is dropped from memory and rewritten on disk; indices are tracked in absolute terms and remapped to the retained tail via `SnapshotIndex`. Recovery loads the snapshot and replays only the tail.
+Truncation after snapshot. [done] The covered log prefix is dropped from memory and rewritten on disk. Indices are tracked in absolute terms and remapped to the retained tail via `SnapshotIndex`. Recovery loads the snapshot and replays only the tail.
 
 Install snapshot on lagging followers. [done] A new `InstallSnapshot` RPC lets the leader ship a snapshot to any follower whose `nextIndex` has fallen below the compacted prefix, instead of being unable to serve the missing entries.
 
-These keep memory and disk bounded for long-lived deployments. On a 40,000-write / 500-key workload the on-disk log shrank ~30× (5.5 MB → 187 KB) and restart recovery roughly halved; see [optimizations.md](performance/optimizations.md). They improve steady-state and recovery rather than peak ops/sec on a fresh cluster.
+These keep memory and disk bounded for long-lived deployments. On a 40,000-write / 500-key workload the on-disk log shrank about 30× (5.5 MB to 187 KB) and restart recovery roughly halved. See [optimizations.md](performance/optimizations.md). They improve steady-state and recovery rather than peak ops/sec on a fresh cluster.
 
-Segmented log files. [planned] Rotating `.rlog` files by size or time (so compaction and fsync operate on smaller units) is still future work; compaction currently rewrites a single log file.
+Segmented log files. [planned] Rotating `.rlog` files by size or time (so compaction and fsync operate on smaller units) is still future work. Compaction currently rewrites a single log file.
 
 ---
 
@@ -159,30 +160,30 @@ Hardware and placement. SSD vs HDD, co-locating nodes in the same AZ vs spreadin
 A practical order if the goal is measurable improvement without rewriting Raft:
 
 1. Group commit / batched fsync [done] (addresses the write latency floor).
-2. Remove replication sleep [done] and pipeline leader commits [planned] (better throughput under concurrent writers).
-3. Batch entries in AppendEntries [done] (fewer round trips per unit of work).
-4. Single wire format for log and RPC (lower CPU; entries are already serialized once and cached).
+2. Remove replication sleep [done]. Pipeline leader commits [done, reverted].
+3. Batch entries in AppendEntries [done], and optional leader write batching [done, opt-in].
+4. Single wire format for log and RPC (lower CPU. Entries are already serialized once and cached).
 5. Read path optimizations (only if read load or leader CPU becomes the bottleneck).
-6. Snapshots and compaction [done] (required for long-running clusters, less for benchmark peaks).
+6. Snapshots and compaction [done], including off-lock compaction so maintenance pauses stay short.
 
 ```mermaid
 flowchart TD
   subgraph highImpact [High impact on writes]
     A[Batch fsync / group commit]
-    B[Pipeline commits on leader]
     C[Batch AppendEntries]
   end
   subgraph mediumImpact [Medium impact]
     D[Remove replication sleep]
     E[Binary log encoding]
+    H[Leader write batching opt-in]
   end
   subgraph longTerm [Long-running cluster]
     F[Snapshots]
-    G[Compaction]
+    G[Off-lock compaction]
   end
-  A --> B
-  B --> C
+  A --> C
   D --> C
+  C --> H
   F --> G
 ```
 

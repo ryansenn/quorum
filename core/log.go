@@ -14,6 +14,8 @@ type Command struct {
 	Op    string
 	Key   string
 	Value string
+	// Puts holds the payload for Op == "batch". Single-put commands leave it nil.
+	Puts []KV `json:",omitempty"`
 }
 
 type LogEntry struct {
@@ -38,6 +40,11 @@ type Snapshot struct {
 
 func NewCommand(op string, key string, value string) *Command {
 	return &Command{Op: op, Key: key, Value: value}
+}
+
+// NewBatchCommand packs many puts into one Raft log entry.
+func NewBatchCommand(puts []KV) *Command {
+	return &Command{Op: "batch", Puts: puts}
 }
 
 func NewLogEntry(term int64, command *Command) *LogEntry {
@@ -89,6 +96,7 @@ func (l *Logger) ClearData() {
 	// snapshot base and its new entries are mapped to the wrong absolute indices.
 	os.Remove("logs/" + l.Id + ".snap")
 	os.Remove("logs/" + l.Id + ".snap.tmp")
+	os.Remove("logs/" + l.Id + ".rlog.tmp")
 
 	l.metaMu.Lock()
 	defer l.metaMu.Unlock()
@@ -151,6 +159,16 @@ func (l *Logger) Sync() {
 // WriteSnapshot persists a snapshot atomically (write temp, fsync, rename) so a
 // crash never leaves a half-written snapshot file.
 func (l *Logger) WriteSnapshot(snap *Snapshot) {
+	tmp := l.writeSnapshotTemp(snap)
+	if err := os.Rename(tmp, "logs/"+l.Id+".snap"); err != nil {
+		log.Fatalf("%s rename snapshot: %v", l.Id, err)
+	}
+}
+
+// writeSnapshotTemp writes and fsyncs the snapshot to a .snap.tmp file without
+// renaming it. Used by off-lock compaction so the live .snap is only replaced
+// at cutover, after the rewritten log is ready.
+func (l *Logger) writeSnapshotTemp(snap *Snapshot) string {
 	data, err := json.Marshal(snap)
 	if err != nil {
 		log.Fatalf("%s marshal snapshot: %v", l.Id, err)
@@ -167,7 +185,80 @@ func (l *Logger) WriteSnapshot(snap *Snapshot) {
 		log.Fatalf("%s sync snapshot: %v", l.Id, err)
 	}
 	f.Close()
-	if err := os.Rename(tmp, "logs/"+l.Id+".snap"); err != nil {
+	return tmp
+}
+
+// writeLogTemp encodes entries to a temporary log file and fsyncs it. Callers
+// later swap it into place under LogMu via swapLogFile.
+func (l *Logger) writeLogTemp(entries []*LogEntry) string {
+	tmp := "logs/" + l.Id + ".rlog.tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		log.Fatalf("%s create log temp: %v", l.Id, err)
+	}
+	for _, entry := range entries {
+		if _, err := f.Write(encodeLogEntry(entry)); err != nil {
+			log.Fatalf("%s write log temp: %v", l.Id, err)
+		}
+	}
+	if err := f.Sync(); err != nil {
+		log.Fatalf("%s sync log temp: %v", l.Id, err)
+	}
+	f.Close()
+	return tmp
+}
+
+// appendLogTemp appends entries to an existing temp log and fsyncs. Used at
+// cutover for entries that arrived while the temp file was being built.
+func (l *Logger) appendLogTemp(path string, entries []*LogEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatalf("%s open log temp: %v", l.Id, err)
+	}
+	for _, entry := range entries {
+		if _, err := f.Write(encodeLogEntry(entry)); err != nil {
+			log.Fatalf("%s append log temp: %v", l.Id, err)
+		}
+	}
+	if err := f.Sync(); err != nil {
+		log.Fatalf("%s sync log temp: %v", l.Id, err)
+	}
+	f.Close()
+}
+
+// swapLogFile replaces the live .rlog with a pre-synced temp file and rebuilds
+// the offset table for entries. Caller holds LogMu. syncMu serializes against Sync.
+func (l *Logger) swapLogFile(tmpPath string, entries []*LogEntry) {
+	l.syncMu.Lock()
+	defer l.syncMu.Unlock()
+
+	if err := l.logFile.Close(); err != nil {
+		log.Fatalf("%s close log: %v", l.Id, err)
+	}
+	final := "logs/" + l.Id + ".rlog"
+	if err := os.Rename(tmpPath, final); err != nil {
+		log.Fatalf("%s rename log: %v", l.Id, err)
+	}
+	f, err := os.OpenFile(final, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		log.Fatalf("%s reopen log: %v", l.Id, err)
+	}
+	l.logFile = f
+	l.offset = nil
+	var pos int64
+	for _, entry := range entries {
+		l.offset = append(l.offset, pos)
+		pos += int64(len(encodeLogEntry(entry)))
+	}
+	l.dirty = false
+}
+
+// commitSnapshotTemp renames a previously written .snap.tmp into place.
+func (l *Logger) commitSnapshotTemp(tmpPath string) {
+	if err := os.Rename(tmpPath, "logs/"+l.Id+".snap"); err != nil {
 		log.Fatalf("%s rename snapshot: %v", l.Id, err)
 	}
 }

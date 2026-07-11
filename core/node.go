@@ -53,7 +53,11 @@ func (n *Node) GetState() NodeState {
 }
 
 func (n *Node) SetState(s NodeState) {
-	n.state.Store(int32(s))
+	prev := NodeState(n.state.Swap(int32(s)))
+	// Pending batched puts must not wait for a commit that will never land.
+	if prev == Leader && s != Leader && n.batcher != nil {
+		n.batcher.RejectPending()
+	}
 }
 
 type Node struct {
@@ -98,6 +102,7 @@ type Node struct {
 	Logger             *Logger
 	Storage            *Engine
 	Events             *EventLog
+	batcher            *WriteBatcher
 }
 
 func NewNode(id string, peers map[string]string) *Node {
@@ -128,6 +133,7 @@ func NewNode(id string, peers map[string]string) *Node {
 		n.MatchIndex[key] = &atomic.Int64{}
 	}
 
+	n.batcher = newWriteBatcher(n)
 	return n
 }
 
@@ -135,6 +141,7 @@ func (n *Node) Init() {
 	log.Printf("%s has been initialized.", n.Id)
 	n.StartServer()
 	n.StartClients()
+	go n.batcher.run()
 	go n.runCompactor()
 	n.StartElectionTimer()
 }
@@ -178,8 +185,11 @@ func (n *Node) HandleCommand(cmd *Command) string {
 	case "get":
 		return n.Get(cmd.Key)
 	case "put":
-		n.Commit(cmd)
-		return "success"
+		if BatchMaxOps <= 1 {
+			n.Commit(cmd)
+			return "success"
+		}
+		return n.batcher.Submit(cmd.Key, cmd.Value)
 	}
 
 	return "unknown command"
@@ -276,6 +286,21 @@ func (n *Node) GetLogTail(tail int) []LogEntryView {
 		})
 	}
 	return out
+}
+
+func (n *Node) BatchAvgSize() float64 {
+	if n.batcher == nil {
+		return 0
+	}
+	return n.batcher.AvgBatchSize()
+}
+
+func (n *Node) BatchFlushCounts() map[string]int64 {
+	if n.batcher == nil {
+		return map[string]int64{}
+	}
+	size, timer, forced := n.batcher.FlushCounts()
+	return map[string]int64{"size": size, "timer": timer, "forced": forced}
 }
 
 func (n *Node) StateName() string {

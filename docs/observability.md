@@ -23,11 +23,11 @@ Each node exposes Prometheus metrics at `/metrics`. The playground aggregates cl
 |---|---|---|---|---|
 | `quorum_state` | Gauge | `node` | 0=follower, 1=candidate, 2=leader | Stat panel or state timeline per node |
 | `quorum_is_leader` | Gauge | `node` | 1 if leader | Leader identity stat with threshold coloring |
-| `quorum_term` | Gauge | `node` | Current Raft term | Time series; spikes indicate elections |
-| `quorum_commit_index` | Gauge | `node` | Highest committed log index | Multi-series line; converging lines = healthy replication |
+| `quorum_term` | Gauge | `node` | Current Raft term | Time series. Spikes indicate elections. |
+| `quorum_commit_index` | Gauge | `node` | Highest committed log index | Multi-series line. Converging lines mean healthy replication. |
 | `quorum_last_applied` | Gauge | `node` | Highest applied log index | Line chart per node |
-| `quorum_apply_lag` | Gauge | `node` | `commit_index - last_applied` | Line; sustained lag = slow apply loop |
-| `quorum_log_length` | Gauge | `node` | Number of log entries | Line; divergence hints replication issues |
+| `quorum_apply_lag` | Gauge | `node` | `commit_index - last_applied` | Line. Sustained lag means a slow apply loop. |
+| `quorum_log_length` | Gauge | `node` | Number of log entries | Line. Divergence hints at replication issues. |
 | `up{job="quorum"}` | Gauge | `instance` | Scrape success | Node up/down table |
 
 Useful PromQL
@@ -50,8 +50,8 @@ quorum_commit_index - quorum_last_applied
 
 | Metric | Type | Labels | Source | Visualization |
 |---|---|---|---|---|
-| `quorum_replication_lag` | Gauge | `node` | Playground | Line; spikes during load or partition |
-| `quorum_leader_count` | Gauge | - | Playground | Stat; alert when `!= 1` |
+| `quorum_replication_lag` | Gauge | `node` | Playground | Line. Spikes during load or partition. |
+| `quorum_leader_count` | Gauge | - | Playground | Stat. Alert when not equal to 1. |
 | `quorum_cluster_nodes` | Gauge | - | Playground | Configured cluster size |
 | `quorum_nodes_running` | Gauge | - | Playground | Processes currently up |
 
@@ -165,9 +165,9 @@ histogram_quantile(0.99, sum by (le, op) (rate(quorum_client_request_duration_se
 
 | Scenario | What to watch |
 |---|---|
-| `steady-writes.json` | Commit rate rises; lag stays near zero |
+| `steady-writes.json` | Commit rate rises. Lag stays near zero. |
 | `leader-failure.json` | Term spike, election rate bump, brief lag |
-| `partition.json` | Lag on minority; append failures rise |
+| `partition.json` | Lag on minority. Append failures rise. |
 | `recovery.json` | Lag decays after partition heal |
 
 ---

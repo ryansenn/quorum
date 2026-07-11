@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -107,6 +108,8 @@ func status(w http.ResponseWriter, r *http.Request) {
 		"matchIndex":    matchIndex,
 		"nextIndex":     nextIndex,
 		"blockedPeers":  node.BlockedPeerList(),
+		"batchAvgSize":  node.BatchAvgSize(),
+		"batchFlushes":  node.BatchFlushCounts(),
 	})
 }
 
@@ -177,15 +180,24 @@ func main() {
 	reset := flag.Bool("reset", false, "Reset logs and metadata")
 	noEvents := flag.Bool("no-events", false, "Disable debug event recording")
 	metrics := flag.Bool("metrics", true, "Expose Prometheus /metrics endpoint")
+	pprof := flag.Bool("pprof", false, "Expose net/http/pprof endpoints on the node HTTP port")
 	snapshotThreshold := flag.Int64("snapshot-threshold", core.SnapshotThreshold, "Applied entries beyond the last snapshot before the log is compacted")
+	batchMaxOps := flag.Int("batch-max-ops", core.BatchMaxOps, "Max client puts packed into one Raft log entry (1 disables batching)")
+	batchMaxWait := flag.Duration("batch-max-wait", core.BatchMaxWait, "Max time to wait for a write batch to fill before flushing")
 
 	flag.Parse()
 
 	core.SnapshotThreshold = *snapshotThreshold
+	core.BatchMaxOps = *batchMaxOps
+	core.BatchMaxWait = *batchMaxWait
 
 	if *id == "" || *peersStr == "" {
 		fmt.Println("Usage: go run main.go --id=node1 --port=8001 --peers=node1=localhost:8001,node2=localhost:8002,node3=localhost:8003")
 		return
+	}
+
+	if *pprof {
+		log.Printf("%s: pprof endpoints enabled at /debug/pprof/", *id)
 	}
 
 	node = core.NewNode(*id, parsePeers(*peersStr))

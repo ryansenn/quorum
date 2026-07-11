@@ -37,13 +37,13 @@ All tests build the binary and launch a real 5-node cluster on ports 8001-8005 /
 
 | Test | Proves |
 |---|---|
-| `TestElection` | Single leader elected; new leader after kill |
+| `TestElection` | Single leader elected. New leader after kill. |
 | `TestLogReplication` | Write replicates to all nodes |
 | `Test100LogReplication` | 99 random writes converge |
 | `TestLogPersistence` | Data survives sequential kill/restart of all nodes |
 | `TestMissedLogsRecovery` | Down node catches up after rejoin |
 | `TestFollowerChurnUnderLoad` | Writes succeed under repeated follower restarts |
-| `TestNetworkPartition` | Minority partition cannot make progress; heals on rejoin |
+| `TestNetworkPartition` | Minority partition cannot make progress. Heals on rejoin. |
 | `TestNoDualLeaders` | At most one leader per term observed |
 | `TestWriteWhileNoLeader` | Writes fail without quorum |
 | `TestConcurrentWrites` | 100 concurrent writes all committed |
