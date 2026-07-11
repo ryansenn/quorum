@@ -1,6 +1,6 @@
 # Quorum Internals Guide
 
-This guide explains what Raft is, how this project implements it, and how to read the Go source. For hands-on exploration, start with the [playground](../playground/README.md) (`go run ./playground`; requires Docker Desktop).
+This guide explains what Raft is, how this project implements it, and how to read the Go source. For hands-on exploration, start with the [playground](../playground/README.md) (`go run ./playground`, which requires Docker Desktop).
 
 Quorum runs a real multi-node cluster, but it is not a production database.
 
@@ -36,12 +36,12 @@ Raft papers use precise terms. This table maps each term to what it means in Quo
 | Concept | Meaning in Quorum | Where to look |
 |---------|-------------------|---------------|
 | Term | A monotonic election generation. Each election bumps the term. | `Node.Term` in `core/node.go` |
-| Leader / Follower / Candidate | Roles a node can hold. Followers accept entries; candidates ask for votes; the leader replicates. | `NodeState` in `core/node.go` |
+| Leader / Follower / Candidate | Roles a node can hold. Followers accept entries, candidates ask for votes, and the leader replicates. | `NodeState` in `core/node.go` |
 | Log | Ordered list of client commands (`put`, `get` metadata). Each entry has a term and a command. | `Node.Log`, `LogEntry` in `core/log.go` |
 | Commit | An entry is committed once a majority of servers have stored it at the same index. | `CommitIndex`, `UpdateCommitIndex` in `core/leader.go` |
 | Apply | Run a committed entry on the state machine (update the map). | `ApplyCommitted`, `Engine` in `core/storage.go` |
 
-Two details matter for reading the code. Commit and apply are separate steps: an entry can be committed but not yet applied to the map. Term numbers increase on every election, even if no log entries change; they prevent stale leaders from making progress.
+Two details matter for reading the code. Commit and apply are separate steps. An entry can be committed but not yet applied to the map. Term numbers increase on every election, even if no log entries change. They prevent stale leaders from making progress.
 
 ---
 
@@ -63,7 +63,7 @@ flowchart LR
 
 The HTTP layer in `main.go` is thin: it parses query parameters, builds a `Command`, and calls `node.HandleCommand`. All consensus logic lives in `core/`. RPC message shapes are defined in `node.proto` and generated into `proto/nodepb/`.
 
-A typical cluster starts three or more nodes with the same `--peers` string but different `--id` and HTTP ports. Integration tests use five nodes with HTTP on `8001–8005` and gRPC on `9001–9005`, using `127.0.0.1` addresses so Linux resolves peers consistently.
+A typical cluster starts three or more nodes with the same `--peers` string but different `--id` and HTTP ports. Integration tests use five nodes with HTTP on `8001 to 8005` and gRPC on `9001 to 9005`, using `127.0.0.1` addresses so Linux resolves peers consistently.
 
 ---
 
@@ -77,7 +77,7 @@ Tracing one write shows how the pieces connect.
 
 3. Append to the log. The leader calls `Commit` (`core/leader.go`), which first `AppendLog`s the command. That appends to the in-memory slice and persists via `Logger.AppendLog` (`core/log.go`) to `logs/<node-id>.rlog`.
 
-4. Replication. When a node becomes leader, `StartReplicationWorkers` launches one goroutine per follower. Each loop in `ReplicateToFollower` sends `AppendEntries` RPCs (`core/rpc.go`) with new log entries and the current commit index. Followers append matching entries and reply success or failure; on failure the leader decrements `nextIndex` and retries.
+4. Replication. When a node becomes leader, `StartReplicationWorkers` launches one goroutine per follower. Each loop in `ReplicateToFollower` sends `AppendEntries` RPCs (`core/rpc.go`) with new log entries and the current commit index. Followers append matching entries and reply success or failure. On failure the leader decrements `nextIndex` and retries.
 
 5. Commit. After a follower acknowledges entries, the leader updates `matchIndex` and calls `UpdateCommitIndex`. An index becomes committed when a majority of servers have replicated it and the entry's term equals the leader's current term. The leader applies committed entries, then wakes any goroutines blocked in `Commit`.
 
@@ -146,18 +146,18 @@ Goroutines run the election timer loop and one replication worker per follower. 
 
 `atomic` types store term, commit index, last applied index, and pointer strings like leader id so HTTP handlers can read status without holding the log mutex for long.
 
-gRPC handles node-to-node RPCs. `node.proto` defines the service; `protoc` generates `proto/nodepb/node.pb.go` and `node_grpc.pb.go`. The server implementation is the `server` type in `core/rpc.go`.
+gRPC handles node-to-node RPCs. `node.proto` defines the service. `protoc` generates `proto/nodepb/node.pb.go` and `node_grpc.pb.go`. The server implementation is the `server` type in `core/rpc.go`.
 
 ---
 
 ## Suggested reading order
 
-Read in this order the first time you walk through the source. Allow 30–45 minutes.
+Read in this order the first time you walk through the source. Allow 30 to 45 minutes.
 
 1. `main.go`: Flags, HTTP handlers, how a node is created and initialized.
 2. `core/node.go`: The `Node` struct, roles, `HandleCommand`, election timer, `ForwardToLeader`, apply and get.
 3. `core/leader.go`: `AppendLog`, `Commit`, `ReplicateToFollower`, `UpdateCommitIndex`.
-4. `core/rpc.go`: `AppendEntries` and `RequestVote` handlers; where followers accept replicated data.
+4. `core/rpc.go`: `AppendEntries` and `RequestVote` handlers, where followers accept replicated data.
 5. `core/log.go` and `core/storage.go`: Persistence format and the key-value state machine.
 6. `core/node_test.go`: Short tests that show commit/apply and voting rules in isolation.
 7. `test/integration_test.go`: Full cluster scenarios: election, replication, persistence, partitions.
@@ -176,7 +176,7 @@ go run ./playground playground/scenarios/leader-failure.json
 
 Run scenarios against a real cluster and watch Raft metrics. See [observability.md](observability.md) for the metrics reference.
 
-Run a cluster manually. Build and start three nodes as shown in the [README](../README.md). Send writes to any node; reads and writes reach the leader automatically.
+Run a cluster manually. Build and start three nodes as shown in the [README](../README.md). Send writes to any node. Reads and writes reach the leader automatically.
 
 Integration tests:
 

@@ -3,6 +3,6 @@ logs/
 .vscode/
 quorum
 visualizer/
-benchmarks/results/*.csv
-benchmarks/results/*.json
-benchmarks/results/node-logs/
+benchmarks/results/**
+!benchmarks/results/img/
+!benchmarks/results/img/**

@@ -36,7 +36,7 @@ pip install matplotlib
 python3 benchmarks/plot.py
 ```
 
-PNGs are written to `benchmarks/results/img/`. The report references these images; regenerate them locally after running the harness.
+PNGs are written to `benchmarks/results/img/`. The report references these images. Regenerate them locally after running the harness.
 
 ## Outputs
 
