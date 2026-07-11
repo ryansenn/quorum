@@ -231,22 +231,6 @@ No consistent improvement (within run-to-run variance). Flag kept as an optional
 
 These removed accidental waits and duplicated work on the existing replication loop. They matter, and they were measured first historically, but they are not architectural changes to Raft's unit of work or to maintenance I/O.
 
-### Skip replication sleep when entries are pending (kept)
-
-`ReplicateToFollower` slept 10 ms after every AppendEntries RPC, including after successfully replicating entries. This added idle time on the critical path under load.
-
-Only sleep when sending heartbeats with zero entries. On replication failure, retry immediately instead of sleeping.
-
-Files: `core/leader.go`
-
-| Metric | conc=1 | conc=16 | conc=64 |
-|---|---:|---:|---:|
-| Write throughput | 102 to 138 | 815 to 3,411 | 2,444 to 2,887 |
-| Write p50 (ms) | 11.51 to 7.83 | 19.91 to 3.45 | 21.67 to 18.18 |
-| Write p99 (ms) | 12.63 to 12.26 | 32.94 to 19.38 | 60.19 to 75.39 |
-
-Large gains at low and medium concurrency. Kept.
-
 ### Wake replicators on append (kept)
 
 After replicating all pending entries, follower goroutines sent a heartbeat and then slept 10 ms. A new client write during that sleep waited unnecessarily.
@@ -291,6 +275,22 @@ Files: `core/log.go`, `core/leader.go`
 | Write p99 (ms) | 13.63 to 13.61 | 10.80 to 12.63 | 10.79 to 8.60 |
 
 Small CPU savings. No measurable downside. Kept.
+
+### Skip replication sleep when entries are pending (kept)
+
+`ReplicateToFollower` slept 10 ms after every AppendEntries RPC, including after successfully replicating entries. This added idle time on the critical path under load.
+
+Only sleep when sending heartbeats with zero entries. On replication failure, retry immediately instead of sleeping.
+
+Files: `core/leader.go`
+
+| Metric | conc=1 | conc=16 | conc=64 |
+|---|---:|---:|---:|
+| Write throughput | 102 to 138 | 815 to 3,411 | 2,444 to 2,887 |
+| Write p50 (ms) | 11.51 to 7.83 | 19.91 to 3.45 | 21.67 to 18.18 |
+| Write p99 (ms) | 12.63 to 12.26 | 32.94 to 19.38 | 60.19 to 75.39 |
+
+Large gains at low and medium concurrency. Kept.
 
 ---
 
