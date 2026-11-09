@@ -219,3 +219,5 @@ For performance numbers on a single machine, see [benchmarks/REPORT.md](benchmar
 - [The Raft paper](https://raft.github.io/raft.pdf): the authoritative specification.
 - [raft.github.io](https://raft.github.io): paper, slides, and the original animated explanations.
 - [README](../README.md): quick commands for running a cluster and calling the HTTP API.
+
+<img width="1368" height="302" alt="demo1" src="https://github.com/user-attachments/assets/13c63655-7556-4655-a2f0-dfd317dc6184" />
