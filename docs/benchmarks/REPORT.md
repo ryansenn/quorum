@@ -88,3 +88,6 @@ At 16 clients (leader-direct), three nodes sustain ~13.8k writes/sec versus ~11.
 | Mean | | 1,401 |
 
 The leader is killed mid-load. Recovery is the time from the kill until a write commits on a surviving node. It is dominated by the randomized 600 to 1000 ms election timeout. A follower has to ride out its timeout before standing for election, and if the first round splits the vote another timeout elapses before a leader emerges. That makes the figure noisy. Across repeated runs it landed anywhere from about 0.7 s (one clean election) to about 3.4 s (a split round plus a retry), averaging roughly 1.4 s here. No manual intervention is needed for writes to resume.
+
+<img width="1048" height="253" alt="demo" src="https://github.com/user-attachments/assets/8f3df593-b3af-4e7e-bb41-f9759203c690" />
+
