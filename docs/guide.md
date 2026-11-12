@@ -220,6 +220,11 @@ For performance numbers on a single machine, see [benchmarks/REPORT.md](benchmar
 - [raft.github.io](https://raft.github.io): paper, slides, and the original animated explanations.
 - [README](../README.md): quick commands for running a cluster and calling the HTTP API.
 
+  
+
+<img width="1634" height="488" alt="demo-scalar" src="https://github.com/user-attachments/assets/4d74ce6b-7426-4a98-9805-ae9dc037222d" />
+
+
 <img width="1536" height="748" alt="demo-multithreading" src="https://github.com/user-attachments/assets/c21c58b3-c49d-450f-9460-39555e0ea67b" />
 
 
